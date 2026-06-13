@@ -394,7 +394,7 @@ margin-bottom:10px;border:1px solid rgba(51,77,107,.4);background:rgba(10,22,44,
 </style>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 
 <!-- Firebase SDK v9 (modular, CDN) -->
 <script type="module">
@@ -1053,7 +1053,10 @@ function showTab(n,btn){
   if(n==='bilhetes'){renderJogos();renderHist();updateBilhetesBadges();}
   if(n==='stats')renderStats();
   if(typeof gtag!=='undefined') gtag('event','page_view',{page_title:'Aba: '+n,page_location:location.href+'#'+n});
-  if(n==='loterica'){setTimeout(()=>{if(lotMap){lotMap.invalidateSize();lotMap.invalidateSize();}},400);}
+  if(n==='loterica'){
+    setTimeout(()=>{if(lotMap){lotMap.invalidateSize();}},400);
+    if(!userLat){setTimeout(()=>findLoterica(),700);}
+  }
   if(n==='qr'){document.getElementById('qr-result-box').style.display='none';}
 }
 function showStat(g,btn){
@@ -1978,49 +1981,44 @@ function addUserMarker(){
 }
 
 async function fetchLoterica(lat,lng){
-  const radius=5000;
-  // Query ampla: shop=lottery (padrão OSM BR) + amenity + name-based fallback
-  const query=`[out:json][timeout:30];(
-    node["shop"="lottery"](around:${radius},${lat},${lng});
-    node["amenity"="lottery"](around:${radius},${lat},${lng});
-    node["shop"="lottery_ticket"](around:${radius},${lat},${lng});
-    node["name"~"lot[eé]ri",i](around:${radius},${lat},${lng});
-    way["shop"="lottery"](around:${radius},${lat},${lng});
-    way["name"~"lot[eé]ri",i](around:${radius},${lat},${lng});
-  );out center;`;
+  // Nominatim: 2 buscas paralelas com termos diferentes; CORS nativo
+  const delta=0.09; // ~10km de box ao redor
+  const viewbox=`${lng-delta},${lat+delta},${lng+delta},${lat-delta}`;
+  const base=`https://nominatim.openstreetmap.org/search.php?format=jsonv2&limit=50&countrycodes=br&viewbox=${viewbox}&bounded=0`;
+  const hdrs={'Accept-Language':'pt-BR','User-Agent':'SorteScan/1.0'};
 
-  const tryOverpass=async(base)=>{
-    const r=await fetch(`${base}?data=${encodeURIComponent(query)}`,{signal:AbortSignal.timeout(25000)});
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    return r.json();
-  };
+  const [r1,r2]=await Promise.allSettled([
+    fetch(`${base}&q=${encodeURIComponent('lotérica')}`,{headers:hdrs,signal:AbortSignal.timeout(12000)}).then(r=>r.json()),
+    fetch(`${base}&q=${encodeURIComponent('casa lotérica')}`,{headers:hdrs,signal:AbortSignal.timeout(12000)}).then(r=>r.json()),
+  ]);
 
-  // Servidores Overpass em cascata
-  const servers=[
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-  ];
-
-  let data=null;
-  for(const srv of servers){
-    try{data=await tryOverpass(srv);break;}catch(_){}
+  // Combina e deduplica por osm_id
+  const seen=new Set();
+  const elements=[];
+  for(const res of [r1,r2]){
+    if(res.status!=='fulfilled'||!Array.isArray(res.value))continue;
+    for(const it of res.value){
+      if(seen.has(it.osm_id))continue;
+      seen.add(it.osm_id);
+      const parts=(it.display_name||'').split(',');
+      elements.push({
+        id:it.osm_id,
+        lat:parseFloat(it.lat),
+        lon:parseFloat(it.lon),
+        tags:{
+          name:it.name||parts[0].trim()||'Casa Lotérica',
+          'addr:full':parts.slice(1,4).join(',').trim()
+        }
+      });
+    }
   }
 
-  if(!data){
-    // Último recurso: codetabs proxy + overpass-api.de
-    try{
-      data=await(await fetch(`${PROXY_CODETABS}${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query))}`,{signal:AbortSignal.timeout(25000)})).json();
-    }catch(_){}
-  }
-
-  if(!data){
+  if(!elements.length){
     document.getElementById('lot-list').innerHTML=`
       <div class="lot-empty">
         <span class="big">🌐</span>
         <p>Não foi possível buscar lotéricas agora.<br>
-        <small style="color:#475569">Verifique sua conexão e tente novamente.<br>
-        Os servidores de mapa podem estar temporariamente lentos.</small></p>
+        <small style="color:#475569">Verifique sua conexão e tente novamente.</small></p>
         <div style="margin-top:14px">
           <button class="btn gr sm" onclick="fetchLoterica(${lat},${lng})">↻ Tentar novamente</button>
         </div>
@@ -2028,7 +2026,7 @@ async function fetchLoterica(lat,lng){
     resetGPSBtn();
     return;
   }
-  processLoterica(data.elements||[]);
+  processLoterica(elements);
 }
 
 function processLoterica(elements){
