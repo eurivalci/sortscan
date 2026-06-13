@@ -1632,8 +1632,7 @@ function stopCamera(){
 function scanFrame(){
   const vid=document.getElementById('qr-video');
   if(vid.readyState!==vid.HAVE_ENOUGH_DATA)return;
-  // Limita resolução para jsQR processar sem travar
-  const MAX=700;
+  const MAX=1280;
   let w=vid.videoWidth,h=vid.videoHeight;
   if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
   const cvs=document.getElementById('qr-canvas');
@@ -1654,21 +1653,30 @@ function readQRFromFile(evt){
   reader.onload=e=>{
     const img=new Image();
     img.onload=()=>{
-      // Redimensiona para até 1400px (balance qualidade × performance)
-      const MAX=1400;
-      let w=img.width,h=img.height;
-      if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
       const cvs=document.getElementById('qr-canvas');
-      cvs.width=w;cvs.height=h;
       const ctx=cvs.getContext('2d');
-      ctx.drawImage(img,0,0,w,h);
-      const imgData=ctx.getImageData(0,0,w,h);
-      try{
-        const code=jsQR(imgData.data,w,h,{inversionAttempts:'attemptBoth'});
-        if(code&&code.data){processQRData(code.data);}
-        else{setQRStatus('❌ QR Code não encontrado. Tente uma foto mais próxima e bem iluminada.','err');}
-      }catch(ex){setQRStatus('❌ Erro ao processar: '+ex.message,'err');}
+      const tryAt=(w,h)=>{
+        w=Math.round(w);h=Math.round(h);
+        if(w<10||h<10)return null;
+        cvs.width=w;cvs.height=h;
+        ctx.drawImage(img,0,0,w,h);
+        try{return jsQR(ctx.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'attemptBoth'});}
+        catch(_){return null;}
+      };
+      const W=img.naturalWidth||img.width;
+      const H=img.naturalHeight||img.height;
+      // Tenta resolução original (sem reduzir — a foto precisa de qualidade máxima)
+      const LIMIT=5000;
+      const s=W>LIMIT?LIMIT/W:1;
+      let code=tryAt(W*s,H*s);
+      // Tenta na metade (às vezes ajuda com ruído)
+      if(!code)code=tryAt(W*s*0.5,H*s*0.5);
+      // Tenta 1.5× (para QR muito pequeno na foto)
+      if(!code){const s2=Math.min(W*1.5,LIMIT)/W;code=tryAt(W*s2,H*s2);}
+      if(code&&code.data){processQRData(code.data);}
+      else setQRStatus('❌ QR Code não encontrado. Foto mais próxima e com boa iluminação ajuda.','err');
     };
+    img.onerror=()=>setQRStatus('❌ Não foi possível carregar a imagem.','err');
     img.src=e.target.result;
   };
   reader.readAsDataURL(file);
@@ -1700,7 +1708,7 @@ async function processQRData(raw){
   const isUrl=raw.startsWith('http');
 
   if(!isUrl){
-    // ── A: Ponto-e-vírgula (ticket físico da Caixa)
+    // ── A: Ponto-e-vírgula (ticket físico)
     // Ex: "01;000000000001;2800;6;01 03 15 22 38 55"
     const segs=raw.split(';').map(s=>s.trim());
     if(segs.length>=2){
@@ -1711,31 +1719,29 @@ async function processQRData(raw){
       if(ns.length>=5)nums=[...new Set(ns)];
     }
 
-    // ── B: Separadores variados (espaço, vírgula, traço, pipe)
-    if(!nums.length){
-      const parts=raw.split(/[\s,\-|/]+/).map(s=>parseInt(s)).filter(n=>!isNaN(n)&&n>=1&&n<=80);
+    // ── B: String SOMENTE com dígitos e separadores simples
+    // (ex: "03 15 22 38 47 60" ou "03,15,22,38,47,60")
+    // Não roda se houver letras, URLs ou outro texto misturado
+    if(!nums.length&&/^[\d\s,]+$/.test(raw.trim())){
+      const parts=raw.trim().split(/[\s,]+/).map(Number).filter(n=>n>=1&&n<=80);
       const unique=[...new Set(parts)];
       if(unique.length>=5)nums=unique;
     }
 
-    // ── C: Pares concatenados sem separador (ex: "010511203042" → Mega-Sena)
-    if(!nums.length){
-      const onlyDigits=raw.replace(/\D/g,'');
-      if(onlyDigits.length>=10&&onlyDigits.length<=32){
-        const pairs=[];
-        for(let i=0;i<onlyDigits.length-1;i+=2){
-          const n=parseInt(onlyDigits.substr(i,2));
-          if(n>=1&&n<=80)pairs.push(n);
-        }
-        const unique=[...new Set(pairs)];
-        if(unique.length>=5)nums=unique;
-      }
+    // ── B2: Texto misto com jogo já identificado pelo nome
+    // Ex: "MEGA-SENA\n03 15 22 38 47 60"
+    if(!nums.length&&game&&G[game]){
+      const ms=[...raw.matchAll(/\b(\d{1,2})\b/g)]
+        .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=G[game].max);
+      const unique=[...new Set(ms)];
+      if(unique.length===G[game].cnt)nums=unique;
     }
 
     // Deduz jogo pelo tamanho se ainda não detectado
     if(!game&&nums.length){
-      if(nums.length===6)game=nums.some(n=>n>60)?'dupla':'mega';
-      else({15:'loto',5:'quina',7:'dia',10:'time'})[nums.length]&&(game=({15:'loto',5:'quina',7:'dia',10:'time'})[nums.length]);
+      const cntMap={5:'quina',7:'dia',15:'loto',10:'time'};
+      if(nums.length===6)game=nums.some(n=>n>50)?'mega':'mega'; // dupla e mega ambos 6
+      else game=cntMap[nums.length]||null;
     }
   }
 
@@ -1776,8 +1782,9 @@ async function processQRData(raw){
       <div style="font-size:10px;color:var(--green);margin:10px 0 4px">⚡ Abrindo resultado automaticamente…</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
         <button class="btn ghost sm" onclick="saveFromQR('${game}','${nums.join(' ')}')">⭐ Salvar em Recorrentes</button>
+        <button class="btn ghost sm" onclick="showQRGameCorrection('${nums.join(' ')}')">✏️ Jogo errado?</button>
       </div>
-      <div class="qr-raw">📋 ${rawSnip}</div>`;
+      <div class="qr-raw" style="margin-top:8px;font-size:10px;color:#475569;word-break:break-all">📋 ${rawSnip}</div>`;
     setQRStatus('✅ Bilhete identificado! Conferindo…','ok');
     setTimeout(()=>autoCheckFromQR(game,[...nums]),900);
 
@@ -1863,6 +1870,18 @@ function manualQRSubmit(g){
 
 function checkFromQR(g,nsStr){
   autoCheckFromQR(g, nsStr.split(' ').map(Number));
+}
+
+function showQRGameCorrection(numsStr){
+  const content=document.getElementById('qr-result-content');
+  const btns=Object.keys(G).map(g=>
+    `<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`
+  ).join('');
+  content.innerHTML=`
+    <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">Selecione o jogo correto:</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${btns}</div>
+    <p style="font-size:11px;color:#64748b">Números detectados: <span style="color:#e2e8f0">${numsStr}</span></p>`;
+  setQRStatus('Selecione o jogo correto','');
 }
 
 function saveFromQR(g,nsStr){
