@@ -1695,56 +1695,76 @@ async function processQRData(raw){
   const content=document.getElementById('qr-result-content');
   box.style.display='';
 
+  const rawSnip=raw.length>120?raw.substring(0,120)+'…':raw;
   let game=detectGameFromText(raw), nums=[];
-  const isCaixaUrl=raw.startsWith('http')&&(raw.includes('loterias.caixa')||raw.includes('cef.gov.br')||raw.includes('loteria'));
+  const isUrl=raw.startsWith('http');
 
-  // ── Estratégia 1: números diretos no QR ──────────────────────────────
-  // Extrai sequências de 1–2 dígitos únicos no range válido 01–80
-  if(!isCaixaUrl){
-    const extracted=[...new Set([...raw.matchAll(/\b(0?[1-9]|[1-7]\d|80)\b/g)]
-      .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80))];
-    const cntMap={6:'mega',15:'loto',5:'quina',7:'dia',10:'time'};
-    if(!game&&cntMap[extracted.length]) game=cntMap[extracted.length];
-    if(game&&extracted.length===G[game]?.cnt) nums=extracted;
-    // Se ainda não achou jogo, tenta qualquer tamanho ≥ 5
-    if(!nums.length&&extracted.length>=5) nums=extracted;
+  if(!isUrl){
+    // ── A: Ponto-e-vírgula (ticket físico da Caixa)
+    // Ex: "01;000000000001;2800;6;01 03 15 22 38 55"
+    const segs=raw.split(';').map(s=>s.trim());
+    if(segs.length>=2){
+      const codeMap={'01':'mega','02':'mega','04':'loto','08':'quina','50':'dupla','57':'dia','48':'time'};
+      if(!game&&codeMap[segs[0]])game=codeMap[segs[0]];
+      const lastSeg=segs[segs.length-1];
+      const ns=lastSeg.split(/[\s,]+/).map(Number).filter(n=>n>=1&&n<=80);
+      if(ns.length>=5)nums=[...new Set(ns)];
+    }
+
+    // ── B: Separadores variados (espaço, vírgula, traço, pipe)
+    if(!nums.length){
+      const parts=raw.split(/[\s,\-|/]+/).map(s=>parseInt(s)).filter(n=>!isNaN(n)&&n>=1&&n<=80);
+      const unique=[...new Set(parts)];
+      if(unique.length>=5)nums=unique;
+    }
+
+    // ── C: Pares concatenados sem separador (ex: "010511203042" → Mega-Sena)
+    if(!nums.length){
+      const onlyDigits=raw.replace(/\D/g,'');
+      if(onlyDigits.length>=10&&onlyDigits.length<=32){
+        const pairs=[];
+        for(let i=0;i<onlyDigits.length-1;i+=2){
+          const n=parseInt(onlyDigits.substr(i,2));
+          if(n>=1&&n<=80)pairs.push(n);
+        }
+        const unique=[...new Set(pairs)];
+        if(unique.length>=5)nums=unique;
+      }
+    }
+
+    // Deduz jogo pelo tamanho se ainda não detectado
+    if(!game&&nums.length){
+      if(nums.length===6)game=nums.some(n=>n>60)?'dupla':'mega';
+      else({15:'loto',5:'quina',7:'dia',10:'time'})[nums.length]&&(game=({15:'loto',5:'quina',7:'dia',10:'time'})[nums.length]);
+    }
   }
 
-  // ── Estratégia 2: URL da Caixa — busca e parseia a página ────────────
-  if(isCaixaUrl&&(!nums.length)){
+  // ── D: URL Caixa — tenta buscar via proxy
+  if(isUrl&&!nums.length){
     setQRStatus('🌐 Buscando dados na Caixa…','');
     try{
       const html=await(await fetch(
         `${PROXY_CODETABS}${encodeURIComponent(raw)}`,
-        {signal:AbortSignal.timeout(14000)}
+        {signal:AbortSignal.timeout(12000)}
       )).text();
-      if(!game) game=detectGameFromText(html);
-      // Padrão JSON embutido: "dezenas":["01","02",...] ou "numeros":[...]
+      if(!game)game=detectGameFromText(html);
       const jm=html.match(/"(?:dezenas|numeros|listaDezenas|dezenasSorteadas)"\s*:\s*\[([^\]]+)\]/);
-      if(jm){
-        const ext=jm[1].match(/\d+/g)?.map(Number).filter(n=>n>=1&&n<=80)||[];
-        if(ext.length) nums=ext;
-      }
-      // Spans de dezena: class="dezena" > 01
+      if(jm)nums=jm[1].match(/\d+/g)?.map(Number).filter(n=>n>=1&&n<=80)||[];
       if(!nums.length){
         const spans=[...html.matchAll(/class="[^"]*dezena[^"]*"[^>]*>\s*(\d{1,2})\s*</g)]
           .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80);
-        if(spans.length) nums=spans;
-      }
-      // Cells de tabela com números lottery-style (2-digit block)
-      if(!nums.length){
-        const cells=[...html.matchAll(/<t[dh][^>]*>\s*(\d{2})\s*<\/t[dh]>/g)]
-          .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80);
-        if(cells.length>=5) nums=[...new Set(cells)];
+        if(spans.length)nums=spans;
       }
     }catch(_){}
   }
 
-  // ── Monta UI de resultado ─────────────────────────────────────────────
-  const rawSnip=raw.length>140?raw.substring(0,140)+'…':raw;
+  // ── Monta UI ──────────────────────────────────────────────────────────
+  const manualBtns=Object.keys(G).map(g=>
+    `<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`
+  ).join('');
 
   if(game&&nums.length&&G[game]&&nums.length===G[game].cnt){
-    // ✅ Jogo + números identificados → auto-navega
+    // ✅ Identificado — auto-navega
     const cfg=G[game];
     const balls=nums.sort((a,b)=>a-b).map(n=>ballSM(n,cfg.hicl)).join('');
     content.innerHTML=`
@@ -1757,40 +1777,45 @@ async function processQRData(raw){
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
         <button class="btn ghost sm" onclick="saveFromQR('${game}','${nums.join(' ')}')">⭐ Salvar em Recorrentes</button>
       </div>
-      <div class="qr-raw">🔗 ${rawSnip}</div>`;
+      <div class="qr-raw">📋 ${rawSnip}</div>`;
     setQRStatus('✅ Bilhete identificado! Conferindo…','ok');
     setTimeout(()=>autoCheckFromQR(game,[...nums]),900);
 
-  } else if(isCaixaUrl){
-    // URL da Caixa mas não conseguiu extrair números — mostra link + escolha manual
-    const btns=Object.keys(G).map(g=>
-      `<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`
-    ).join('');
+  } else if(game&&nums.length&&G[game]){
+    // Jogo detectado mas contagem incorreta — mostra com input para correção
+    const cfg=G[game];
     content.innerHTML=`
-      <p style="font-size:12px;color:#94a3b8;line-height:1.7;margin-bottom:10px">
-        Bilhete da Caixa detectado.<br>
-        Abra o link para ver os números no site da Caixa e depois informe a modalidade abaixo:
-      </p>
-      <a href="${raw}" target="_blank"
-         style="display:block;padding:10px 12px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.35);border-radius:10px;color:var(--green);font-size:11px;word-break:break-all;margin-bottom:12px;text-decoration:none">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span class="jbadge" style="background:${CMAP[cfg.cl]}">${cfg.ico} ${cfg.lbl}</span>
+        <span style="font-size:11px;color:#f59e0b;font-weight:600">⚠️ ${nums.length} números (esperado: ${cfg.cnt})</span>
+      </div>
+      <p style="font-size:11px;color:#94a3b8;margin-bottom:6px">Corrija se necessário e confirme:</p>
+      <input class="li" id="qr-manual-inp" value="${nums.sort((a,b)=>a-b).join(' ')}" style="margin-bottom:8px">
+      <button class="btn gr sm" onclick="manualQRSubmit('${game}')">✅ Conferir estes números</button>
+      <div class="qr-raw" style="margin-top:8px">📋 ${rawSnip}</div>`;
+    setQRStatus('⚠️ Verifique os números e confirme','');
+
+  } else if(isUrl){
+    // URL mas sem extração bem-sucedida
+    content.innerHTML=`
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">Bilhete online da Caixa detectado.</p>
+      <a href="${raw}" target="_blank" style="display:block;padding:10px 12px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.35);border-radius:10px;color:var(--green);font-size:11px;word-break:break-all;margin-bottom:12px;text-decoration:none">
         🔗 Abrir bilhete no site da Caixa →
       </a>
-      <p style="font-size:11px;color:#64748b;margin-bottom:8px">Selecione a modalidade e informe os números:</p>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">${btns}</div>
-      <div class="qr-raw" style="margin-top:10px">URL: ${rawSnip}</div>`;
+      <p style="font-size:11px;color:#64748b;margin-bottom:8px">Selecione o jogo e informe os números:</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${manualBtns}</div>`;
     setQRStatus('⚠️ Abra o link e informe os números','');
 
   } else {
-    // Dado desconhecido
+    // Genérico — mostra o que foi lido + entrada manual
     content.innerHTML=`
-      <p style="color:#94a3b8;font-size:12px;margin-bottom:10px">
-        Formato não reconhecido. Informe os números manualmente:
-      </p>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-        ${Object.keys(G).map(g=>`<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`).join('')}
+      <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:10px;margin-bottom:12px;word-break:break-all;font-family:monospace;font-size:11px;color:#94a3b8">
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px">Código lido pelo QR:</div>
+        ${rawSnip}
       </div>
-      <div class="qr-raw">📋 ${rawSnip}</div>`;
-    setQRStatus('❓ Formato não identificado — insira manualmente','');
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:10px">Selecione o jogo e informe os números manualmente:</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${manualBtns}</div>`;
+    setQRStatus('📋 Código lido — selecione o jogo manualmente','');
   }
 }
 
@@ -1807,12 +1832,33 @@ function autoCheckFromQR(game,nums){
   },400);
 }
 
-// Abre prompt para inserir números manualmente após escolher modalidade via QR
+// Abre input inline no resultado para o usuário digitar os números
 function promptManualFromQR(g){
   const cfg=G[g];
-  const input=prompt(`Digite os ${cfg.cnt} números do seu bilhete ${cfg.lbl} (separados por espaço):`,'');
-  if(!input) return;
-  autoCheckFromQR(g, input.trim().split(/[\s,]+/).map(Number).filter(n=>n>=1&&n<=cfg.max));
+  const content=document.getElementById('qr-result-content');
+  content.innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span class="jbadge" style="background:${CMAP[cfg.cl]}">${cfg.ico} ${cfg.lbl}</span>
+    </div>
+    <p style="font-size:12px;color:#94a3b8;margin-bottom:8px">
+      Digite os ${cfg.cnt} números do bilhete (1–${cfg.max}), separados por espaço:
+    </p>
+    <input class="li" id="qr-manual-inp" type="text" inputmode="numeric" placeholder="Ex: ${Array.from({length:cfg.cnt},(_,i)=>String(i+1).padStart(2,'0')).join(' ')}" style="margin-bottom:8px;font-size:15px;letter-spacing:2px" autofocus
+      onkeydown="if(event.key==='Enter')manualQRSubmit('${g}')">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn gr sm" onclick="manualQRSubmit('${g}')">✅ Conferir</button>
+      <button class="btn ghost sm" onclick="document.getElementById('qr-result-box').style.display='none'">✕ Fechar</button>
+    </div>`;
+  setQRStatus(`Digite os ${cfg.cnt} números do ${cfg.lbl}`,'');
+  setTimeout(()=>document.getElementById('qr-manual-inp')?.focus(),100);
+}
+
+function manualQRSubmit(g){
+  const inp=document.getElementById('qr-manual-inp');
+  if(!inp)return;
+  const nums=inp.value.trim().split(/[\s,]+/).map(Number).filter(n=>!isNaN(n)&&n>=1&&n<=G[g].max);
+  if(nums.length!==G[g].cnt){alert(`${G[g].lbl} precisa de ${G[g].cnt} números de 1 a ${G[g].max}.`);return;}
+  autoCheckFromQR(g,nums);
 }
 
 function checkFromQR(g,nsStr){
