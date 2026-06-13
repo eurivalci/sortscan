@@ -1426,7 +1426,7 @@ function conferirJogo(id){
   conferirLote();
 }
 
-// ── Conferência em LOTE ──
+// ── Conferência em LOTE (verifica todos os concursos disponíveis) ──
 function conferirLote(){
   const ids=getSelected();
   if(!ids.length){alert('Selecione ao menos um jogo para conferir.');return;}
@@ -1441,40 +1441,70 @@ function conferirLote(){
     const data=RES[j.game].length?RES[j.game]:FALLBACK[j.game]||[];
     if(!data.length)return;
 
-    // Pega último concurso
-    const ultimo=data[0];
-    const hits=ultimo.n.filter(n=>j.nums.includes(n));
-    const prize=cfg.prizes[hits.length]||'';
-    const hasHit=hits.length>=cfg.minP;
-    const balls=ultimo.n.map(n=>{
-      const h=hits.includes(n);
-      return ballSM(n,h?cfg.hicl:'nm');
-    }).join('');
-    const yourBalls=j.nums.map(n=>{
-      const h=hits.includes(n);
-      return ballXS(n,h?cfg.hicl:'nm');
-    }).join('');
+    // Confere contra TODOS os concursos disponíveis (até 10)
+    const checks=data.map(concurso=>{
+      const hits=concurso.n.filter(n=>j.nums.includes(n));
+      return{concurso,hits,prize:cfg.prizes[hits.length]||'',won:hits.length>=cfg.minP};
+    });
+
+    // Melhor resultado
+    const best=checks.reduce((a,b)=>b.hits.length>a.hits.length?b:a,checks[0]);
+    const anyWin=checks.some(c=>c.won);
 
     const div=document.createElement('div');
-    div.className=`batch-result${hasHit?' win':''}`;
+    div.className=`batch-result${anyWin?' win':''}`;
+
+    // Cabeçalho: jogo + melhor acerto
+    const bestBadge=best.hits.length>0
+      ?`<span class="badge ${cfg.bcl}">${best.hits.length} acerto${best.hits.length>1?'s':''} ${best.prize?'· '+best.prize:''}</span>`
+      :'<span style="color:#475569;font-size:10px">Nenhum acerto</span>';
+
+    // Linha do último concurso (referência principal)
+    const ultimo=data[0];
+    const hitsUltimo=ultimo.n.filter(n=>j.nums.includes(n));
+    const ballsUltimo=ultimo.n.map(n=>ballSM(n,hitsUltimo.includes(n)?cfg.hicl:'nm')).join('');
+    const yourBalls=j.nums.map(n=>ballXS(n,hitsUltimo.includes(n)?cfg.hicl:'nm')).join('');
+
+    // Histórico de acertos nos demais concursos
+    const histRows=checks.slice(1).filter(c=>c.hits.length>0).map(c=>{
+      const hBalls=c.concurso.n.map(n=>ballXS(n,c.hits.includes(n)?cfg.hicl:'nm')).join('');
+      return`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid rgba(51,77,107,.2);flex-wrap:wrap">
+        <span style="font-size:9px;color:#64b5f6;white-space:nowrap;min-width:90px">Conc. #${c.concurso.c} · ${c.concurso.d}</span>
+        <div style="display:flex;flex-wrap:wrap;gap:3px">${hBalls}</div>
+        <span class="badge ${cfg.bcl}" style="margin-left:auto">${c.hits.length} acerto${c.hits.length>1?'s':''} ${c.prize?'· '+c.prize:''}</span>
+      </div>`;
+    }).join('');
+
     div.innerHTML=`
       <div class="br-header">
         <span class="br-game" style="color:${CMAP[cfg.cl]}">${cfg.ico} ${cfg.lbl}</span>
         <span class="br-name">— ${j.name}</span>
-        <span class="br-acerto" style="margin-left:auto">${hits.length>0?`<span class="badge ${cfg.bcl}">${hits.length} acerto${hits.length>1?'s':''} ${prize?'· '+prize:''}</span>`:'<span style="color:#475569;font-size:10px">Nenhum acerto</span>'}</span>
+        <span style="margin-left:auto">${bestBadge}</span>
       </div>
-      <div style="font-size:9px;color:#64b5f6;margin-bottom:5px">Concurso #${ultimo.c} · ${ultimo.d} — Resultado:</div>
-      <div class="br-balls">${balls}</div>
-      <div style="font-size:9px;color:#94a3b8;margin:6px 0 4px">Seu jogo:</div>
-      <div class="br-balls">${yourBalls}</div>`;
-    resEl.appendChild(div);
 
-    // Salva no histórico
+      <div style="font-size:9px;color:#64b5f6;margin-bottom:5px;font-weight:600">
+        Último concurso #${ultimo.c} · ${ultimo.d}
+        ${hitsUltimo.length>0?`— <span style="color:${CMAP[cfg.cl]}">${hitsUltimo.length} acerto(s)</span>`:''}
+      </div>
+      <div class="br-balls" style="margin-bottom:4px">${ballsUltimo}</div>
+      <div style="font-size:9px;color:#94a3b8;margin:4px 0 2px">Seu jogo:</div>
+      <div class="br-balls">${yourBalls}</div>
+
+      ${histRows?`
+        <div style="margin-top:10px">
+          <div style="font-size:9px;color:#fbbf24;font-weight:600;margin-bottom:4px">
+            ⭐ Acertos nos concursos anteriores (últimos ${data.length}):
+          </div>
+          ${histRows}
+        </div>`
+      :(checks.length>1?`<div style="font-size:9px;color:#475569;margin-top:8px">Nenhum acerto nos ${data.length} concursos verificados</div>`:'')
+      }`;
+
+    resEl.appendChild(div);
     saveHist(j.game,j.nums,'lote');
   });
 
   updateBilhetesBadges();
-  // Show shortcut to history
   const footer=document.createElement('div');
   footer.style.cssText='text-align:center;margin-top:12px';
   footer.innerHTML=`<button class="btn ghost sm" onclick="showBTab('hist',document.getElementById('btab-hist'))">📋 Ver no Histórico</button>`;
@@ -1599,37 +1629,42 @@ function stopCamera(){
 function scanFrame(){
   const vid=document.getElementById('qr-video');
   if(vid.readyState!==vid.HAVE_ENOUGH_DATA)return;
+  // Limita resolução para jsQR processar sem travar
+  const MAX=700;
+  let w=vid.videoWidth,h=vid.videoHeight;
+  if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
   const cvs=document.getElementById('qr-canvas');
-  cvs.width=vid.videoWidth;cvs.height=vid.videoHeight;
+  cvs.width=w;cvs.height=h;
   const ctx=cvs.getContext('2d');
-  ctx.drawImage(vid,0,0,cvs.width,cvs.height);
-  const imgData=ctx.getImageData(0,0,cvs.width,cvs.height);
+  ctx.drawImage(vid,0,0,w,h);
+  const imgData=ctx.getImageData(0,0,w,h);
   try{
-    const code=jsQR(imgData.data,imgData.width,imgData.height,{inversionAttempts:'dontInvert'});
-    if(code){
-      stopCamera();
-      processQRData(code.data);
-    }
+    const code=jsQR(imgData.data,w,h,{inversionAttempts:'attemptBoth'});
+    if(code&&code.data){stopCamera();processQRData(code.data);}
   }catch(_){}
 }
 
 function readQRFromFile(evt){
   const file=evt.target.files[0];if(!file)return;
-  setQRStatus('⏳ Lendo imagem...','');
+  setQRStatus('⏳ Lendo imagem…','');
   const reader=new FileReader();
   reader.onload=e=>{
     const img=new Image();
     img.onload=()=>{
+      // Redimensiona para até 1400px (balance qualidade × performance)
+      const MAX=1400;
+      let w=img.width,h=img.height;
+      if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
       const cvs=document.getElementById('qr-canvas');
-      cvs.width=img.width;cvs.height=img.height;
+      cvs.width=w;cvs.height=h;
       const ctx=cvs.getContext('2d');
-      ctx.drawImage(img,0,0);
-      const imgData=ctx.getImageData(0,0,cvs.width,cvs.height);
+      ctx.drawImage(img,0,0,w,h);
+      const imgData=ctx.getImageData(0,0,w,h);
       try{
-        const code=jsQR(imgData.data,imgData.width,imgData.height,{inversionAttempts:'attemptBoth'});
-        if(code){processQRData(code.data);}
-        else{setQRStatus('❌ QR Code não encontrado na imagem. Tente uma foto mais nítida.','err');}
-      }catch(ex){setQRStatus('❌ Erro ao ler QR Code: '+ex.message,'err');}
+        const code=jsQR(imgData.data,w,h,{inversionAttempts:'attemptBoth'});
+        if(code&&code.data){processQRData(code.data);}
+        else{setQRStatus('❌ QR Code não encontrado. Tente uma foto mais próxima e bem iluminada.','err');}
+      }catch(ex){setQRStatus('❌ Erro ao processar: '+ex.message,'err');}
     };
     img.src=e.target.result;
   };
@@ -1637,80 +1672,161 @@ function readQRFromFile(evt){
   evt.target.value='';
 }
 
-// Parseia dados do QR Code da Caixa e outros formatos
-function processQRData(raw){
-  setQRStatus('✅ QR Code lido com sucesso!','ok');
+// Detecta modalidade pelo texto (URL ou conteúdo)
+function detectGameFromText(text){
+  const t=text.toLowerCase();
+  const map=[['megasena','mega'],['mega-sena','mega'],['mega_sena','mega'],['mega','mega'],
+             ['lotofacil','loto'],['loto-facil','loto'],['loto_facil','loto'],['lotofácil','loto'],
+             ['quina','quina'],['duplasena','dupla'],['dupla-sena','dupla'],['dupla_sena','dupla'],
+             ['diadesorte','dia'],['dia-de-sorte','dia'],['dia_de_sorte','dia'],
+             ['timemania','time'],['time-mania','time']];
+  for(const[k,v]of map){if(t.includes(k))return v;}
+  return null;
+}
+
+// Parser principal — async para poder buscar URL da Caixa
+async function processQRData(raw){
+  setQRStatus('🔍 Identificando bilhete…','');
   if(typeof gtag!=='undefined') gtag('event','qr_lido',{event_category:'qr_code',event_label:'leitura_sucesso'});
   const box=document.getElementById('qr-result-box');
   const content=document.getElementById('qr-result-content');
   box.style.display='';
 
-  // Tenta extrair números (bilhetes Caixa têm formato variado)
-  // URL padrão: https://www.loterias.caixa.gov.br/...
-  // Também formatos: "MEGA:01 02 03 ..." ou só sequência de números
-  let game=null, nums=[];
-  const lower=raw.toLowerCase();
+  let game=detectGameFromText(raw), nums=[];
+  const isCaixaUrl=raw.startsWith('http')&&(raw.includes('loterias.caixa')||raw.includes('cef.gov.br')||raw.includes('loteria'));
 
-  // Detectar modalidade pelo URL ou conteúdo
-  const gameMap={megasena:'mega',mega:'mega',lotofacil:'loto',loto:'loto',quina:'quina',duplasena:'dupla',dupla:'dupla',diadesorte:'dia',timemania:'time'};
-  for(const[k,v] of Object.entries(gameMap)){if(lower.includes(k)){game=v;break;}}
-
-  // Extrair todos os números do texto
-  const allNums=[...raw.matchAll(/\b(\d{1,2})\b/g)].map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80);
-  // Remover duplicatas e ordenar
-  const uniqueNums=[...new Set(allNums)].sort((a,b)=>a-b);
-
-  // Se encontrou jogo e números suficientes, tenta conferir
-  let matchedGame=game, matchedNums=uniqueNums;
-
-  if(!matchedGame){
-    // Detecta pelo count de números
+  // ── Estratégia 1: números diretos no QR ──────────────────────────────
+  // Extrai sequências de 1–2 dígitos únicos no range válido 01–80
+  if(!isCaixaUrl){
+    const extracted=[...new Set([...raw.matchAll(/\b(0?[1-9]|[1-7]\d|80)\b/g)]
+      .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80))];
     const cntMap={6:'mega',15:'loto',5:'quina',7:'dia',10:'time'};
-    if(cntMap[uniqueNums.length])matchedGame=cntMap[uniqueNums.length];
+    if(!game&&cntMap[extracted.length]) game=cntMap[extracted.length];
+    if(game&&extracted.length===G[game]?.cnt) nums=extracted;
+    // Se ainda não achou jogo, tenta qualquer tamanho ≥ 5
+    if(!nums.length&&extracted.length>=5) nums=extracted;
   }
 
-  let html=`<div class="qr-raw">🔗 Dado bruto: ${raw.substring(0,160)}${raw.length>160?'…':''}</div>`;
+  // ── Estratégia 2: URL da Caixa — busca e parseia a página ────────────
+  if(isCaixaUrl&&(!nums.length)){
+    setQRStatus('🌐 Buscando dados na Caixa…','');
+    try{
+      const html=await(await fetch(
+        `${PROXY_CODETABS}${encodeURIComponent(raw)}`,
+        {signal:AbortSignal.timeout(14000)}
+      )).text();
+      if(!game) game=detectGameFromText(html);
+      // Padrão JSON embutido: "dezenas":["01","02",...] ou "numeros":[...]
+      const jm=html.match(/"(?:dezenas|numeros|listaDezenas|dezenasSorteadas)"\s*:\s*\[([^\]]+)\]/);
+      if(jm){
+        const ext=jm[1].match(/\d+/g)?.map(Number).filter(n=>n>=1&&n<=80)||[];
+        if(ext.length) nums=ext;
+      }
+      // Spans de dezena: class="dezena" > 01
+      if(!nums.length){
+        const spans=[...html.matchAll(/class="[^"]*dezena[^"]*"[^>]*>\s*(\d{1,2})\s*</g)]
+          .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80);
+        if(spans.length) nums=spans;
+      }
+      // Cells de tabela com números lottery-style (2-digit block)
+      if(!nums.length){
+        const cells=[...html.matchAll(/<t[dh][^>]*>\s*(\d{2})\s*<\/t[dh]>/g)]
+          .map(m=>parseInt(m[1])).filter(n=>n>=1&&n<=80);
+        if(cells.length>=5) nums=[...new Set(cells)];
+      }
+    }catch(_){}
+  }
 
-  if(matchedGame&&matchedNums.length>0){
-    const cfg=G[matchedGame];
-    const balls=matchedNums.map(n=>ballXS(n,'nm')).join('');
-    html=`
+  // ── Monta UI de resultado ─────────────────────────────────────────────
+  const rawSnip=raw.length>140?raw.substring(0,140)+'…':raw;
+
+  if(game&&nums.length&&G[game]&&nums.length===G[game].cnt){
+    // ✅ Jogo + números identificados → auto-navega
+    const cfg=G[game];
+    const balls=nums.sort((a,b)=>a-b).map(n=>ballSM(n,cfg.hicl)).join('');
+    content.innerHTML=`
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span class="jbadge" style="background:${CMAP[cfg.cl]}">${cfg.ico} ${cfg.lbl}</span>
-        <span style="font-size:11px;color:#94a3b8">${matchedNums.length} números detectados</span>
+        <span style="font-size:11px;color:var(--green);font-weight:600">✅ ${nums.length} números detectados</span>
       </div>
       <div class="qr-nums">${balls}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="btn ${cfg.cl}" onclick="checkFromQR('${matchedGame}','${matchedNums.join(' ')}')">🔍 Conferir Agora</button>
-        <button class="btn ghost" onclick="saveFromQR('${matchedGame}','${matchedNums.join(' ')}')">⭐ Salvar em Recorrentes</button>
+      <div style="font-size:10px;color:var(--green);margin:10px 0 4px">⚡ Abrindo resultado automaticamente…</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn ghost sm" onclick="saveFromQR('${game}','${nums.join(' ')}')">⭐ Salvar em Recorrentes</button>
       </div>
-      ${html}`;
+      <div class="qr-raw">🔗 ${rawSnip}</div>`;
+    setQRStatus('✅ Bilhete identificado! Conferindo…','ok');
+    setTimeout(()=>autoCheckFromQR(game,[...nums]),900);
+
+  } else if(isCaixaUrl){
+    // URL da Caixa mas não conseguiu extrair números — mostra link + escolha manual
+    const btns=Object.keys(G).map(g=>
+      `<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`
+    ).join('');
+    content.innerHTML=`
+      <p style="font-size:12px;color:#94a3b8;line-height:1.7;margin-bottom:10px">
+        Bilhete da Caixa detectado.<br>
+        Abra o link para ver os números no site da Caixa e depois informe a modalidade abaixo:
+      </p>
+      <a href="${raw}" target="_blank"
+         style="display:block;padding:10px 12px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.35);border-radius:10px;color:var(--green);font-size:11px;word-break:break-all;margin-bottom:12px;text-decoration:none">
+        🔗 Abrir bilhete no site da Caixa →
+      </a>
+      <p style="font-size:11px;color:#64748b;margin-bottom:8px">Selecione a modalidade e informe os números:</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${btns}</div>
+      <div class="qr-raw" style="margin-top:10px">URL: ${rawSnip}</div>`;
+    setQRStatus('⚠️ Abra o link e informe os números','');
+
   } else {
-    html=`<p style="color:#94a3b8;font-size:12px;margin-bottom:10px">Não foi possível identificar automaticamente os números. Cole o código abaixo em um jogo manualmente.</p>`+html;
+    // Dado desconhecido
+    content.innerHTML=`
+      <p style="color:#94a3b8;font-size:12px;margin-bottom:10px">
+        Formato não reconhecido. Informe os números manualmente:
+      </p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        ${Object.keys(G).map(g=>`<button class="btn ${G[g].cl} xs" onclick="promptManualFromQR('${g}')">${G[g].ico} ${G[g].lbl}</button>`).join('')}
+      </div>
+      <div class="qr-raw">📋 ${rawSnip}</div>`;
+    setQRStatus('❓ Formato não identificado — insira manualmente','');
   }
-  content.innerHTML=html;
+}
+
+// Navega para a aba do jogo e exibe resultado automaticamente
+function autoCheckFromQR(game,nums){
+  const tabIdx={mega:0,loto:1,quina:2,dupla:3,dia:4,time:5};
+  const btns=document.querySelectorAll('.tb');
+  showTab(game,btns[tabIdx[game]||0]);
+  document.getElementById(`inp-${game}`).value=nums.join(' ');
+  check(game);
+  setTimeout(()=>{
+    const el=document.getElementById(`bil-${game}`)||document.getElementById(`res-${game}`);
+    if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+  },400);
+}
+
+// Abre prompt para inserir números manualmente após escolher modalidade via QR
+function promptManualFromQR(g){
+  const cfg=G[g];
+  const input=prompt(`Digite os ${cfg.cnt} números do seu bilhete ${cfg.lbl} (separados por espaço):`,'');
+  if(!input) return;
+  autoCheckFromQR(g, input.trim().split(/[\s,]+/).map(Number).filter(n=>n>=1&&n<=cfg.max));
 }
 
 function checkFromQR(g,nsStr){
-  const tabIdx={mega:0,loto:1,quina:2,dupla:3,dia:4,time:5};
-  const btns=document.querySelectorAll('.tb');
-  showTab(g,btns[tabIdx[g]||0]);
-  document.getElementById(`inp-${g}`).value=nsStr;
-  check(g);
+  autoCheckFromQR(g, nsStr.split(' ').map(Number));
 }
 
 function saveFromQR(g,nsStr){
   const nums=nsStr.split(' ').map(Number);
   const cfg=G[g];
   const jogos=loadJogos();
-  // Check for duplicate
   if(jogos.some(j=>j.game===g&&j.nums.join(',')===nums.join(','))){
     alert('Este bilhete já está salvo em Meus Bilhetes!');return;
   }
-  const name=prompt(`Nome para este bilhete (${cfg.lbl}):`, `Meu ${cfg.lbl}`);
+  const name=prompt(`Nome para este bilhete (${cfg.lbl}):`,`Meu ${cfg.lbl}`);
   if(!name)return;
   jogos.push({id:Date.now(),game:g,name,nums,freq:'sempre',createdAt:new Date().toLocaleDateString('pt-BR')});
-  saveJogosLS(jogos);
+  saveJogos(jogos);
   updateBilhetesBadges();
   alert('✅ Bilhete salvo! Acesse "Meus Bilhetes" para conferir.');
 }
@@ -1863,46 +1979,63 @@ function addUserMarker(){
 
 async function fetchLoterica(lat,lng){
   const radius=5000;
-  const query=`[out:json][timeout:25];(node["shop"="lottery"](around:${radius},${lat},${lng});node["amenity"="lottery"](around:${radius},${lat},${lng});node["name"~"lotérica|loteria|caixa lotérica",i](around:${radius},${lat},${lng});way["name"~"lotérica|loteria|caixa lotérica",i](around:${radius},${lat},${lng}););out center;`;
+  // Query ampla: shop=lottery (padrão OSM BR) + amenity + name-based fallback
+  const query=`[out:json][timeout:30];(
+    node["shop"="lottery"](around:${radius},${lat},${lng});
+    node["amenity"="lottery"](around:${radius},${lat},${lng});
+    node["shop"="lottery_ticket"](around:${radius},${lat},${lng});
+    node["name"~"lot[eé]ri",i](around:${radius},${lat},${lng});
+    way["shop"="lottery"](around:${radius},${lat},${lng});
+    way["name"~"lot[eé]ri",i](around:${radius},${lat},${lng});
+  );out center;`;
 
-  const tryFetch=async(url)=>{
-    const r=await fetch(url,{signal:AbortSignal.timeout(20000)});
+  const tryOverpass=async(base)=>{
+    const r=await fetch(`${base}?data=${encodeURIComponent(query)}`,{signal:AbortSignal.timeout(25000)});
     if(!r.ok)throw new Error('HTTP '+r.status);
     return r.json();
   };
 
+  // Servidores Overpass em cascata
+  const servers=[
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  ];
+
   let data=null;
-  try{
-    data=await tryFetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-  }catch(e1){
-    try{
-      // Instância alternativa
-      data=await tryFetch(`https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(query)}`);
-    }catch(e2){
-      try{
-        const r3=await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query))}`);
-        const d3=await r3.json();
-        data=JSON.parse(d3.contents);
-      }catch(e3){
-        document.getElementById('lot-list').innerHTML=`
-          <div class="lot-empty">
-            <span class="big">🌐</span>
-            <p>Não foi possível buscar lotéricas agora.<br>
-            <small style="color:#475569">Verifique sua conexão e tente novamente.<br>
-            A API de mapas pode estar temporariamente lenta.</small></p>
-          </div>`;
-        resetGPSBtn();
-        return;
-      }
-    }
+  for(const srv of servers){
+    try{data=await tryOverpass(srv);break;}catch(_){}
   }
-  // Aguardar mapa inicializar antes de adicionar marcadores
+
+  if(!data){
+    // Último recurso: codetabs proxy + overpass-api.de
+    try{
+      data=await(await fetch(`${PROXY_CODETABS}${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query))}`,{signal:AbortSignal.timeout(25000)})).json();
+    }catch(_){}
+  }
+
+  if(!data){
+    document.getElementById('lot-list').innerHTML=`
+      <div class="lot-empty">
+        <span class="big">🌐</span>
+        <p>Não foi possível buscar lotéricas agora.<br>
+        <small style="color:#475569">Verifique sua conexão e tente novamente.<br>
+        Os servidores de mapa podem estar temporariamente lentos.</small></p>
+        <div style="margin-top:14px">
+          <button class="btn gr sm" onclick="fetchLoterica(${lat},${lng})">↻ Tentar novamente</button>
+        </div>
+      </div>`;
+    resetGPSBtn();
+    return;
+  }
   processLoterica(data.elements||[]);
 }
 
 function processLoterica(elements){
   resetGPSBtn();
-  lotMarkers.forEach(m=>m.remove());lotMarkers=[];
+  // Remove marcadores antigos
+  lotMarkers.forEach(m=>m.remove());
+  lotMarkers=[];
 
   allLoterica=elements.map(el=>{
     const lt=el.lat||(el.center&&el.center.lat);
@@ -1912,7 +2045,7 @@ function processLoterica(elements){
     const name=tags.name||tags['name:pt']||'Casa Lotérica';
     const addr=[tags['addr:street'],tags['addr:housenumber'],tags['addr:suburb']].filter(Boolean).join(', ')||tags['addr:full']||'';
     const dist=haversine(userLat,userLng,lt,ln);
-    return{id:el.id,name,addr,lat:lt,lng:ln,dist,tags};
+    return{id:el.id,name,addr,lat:lt,lng:ln,dist,tags,marker:null};
   }).filter(Boolean).sort((a,b)=>a.dist-b.dist).slice(0,30);
 
   if(!allLoterica.length){
@@ -1932,48 +2065,81 @@ function processLoterica(elements){
 
   document.getElementById('lot-filters').style.display='';
   renderLoterica();
+  addLotMarkers();
+}
 
-  // Adicionar marcadores ao mapa (aguardar inicialização)
-  const addMarkers=()=>{
-    if(!lotMap){setTimeout(addMarkers,200);return;}
-    const lotIcon=L.divIcon({html:'<div style="width:30px;height:30px;border-radius:9px;background:#10b981;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 2px 10px rgba(0,0,0,.5)">🎱</div>',iconSize:[30,30],iconAnchor:[15,15],className:''});
-    allLoterica.forEach(l=>{
-      const m=L.marker([l.lat,l.lng],{icon:lotIcon})
-        .addTo(lotMap)
-        .bindPopup(`<strong style="font-size:13px">${l.name}</strong><br>${l.addr?'<span style="color:#666">'+l.addr+'</span><br>':''}📏 <strong>${distFmt(l.dist)}</strong>`);
-      lotMarkers.push(m);
+function addLotMarkers(){
+  if(!lotMap){setTimeout(addLotMarkers,200);return;}
+
+  const lotIcon=L.divIcon({
+    html:'<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#059669,#10b981);border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 3px 12px rgba(0,0,0,.45)">🎱</div>',
+    iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-20],className:''
+  });
+
+  allLoterica.forEach((l,idx)=>{
+    const gmUrl=`https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${l.lat},${l.lng}`;
+    const popup=`
+      <div style="min-width:180px;font-family:sans-serif">
+        <strong style="font-size:13px;display:block;margin-bottom:4px">${l.name}</strong>
+        ${l.addr?`<span style="font-size:11px;color:#555;display:block;margin-bottom:6px">📍 ${l.addr}</span>`:''}
+        <span style="font-size:11px;color:#059669;font-weight:600">📏 ${distFmt(l.dist)}</span>
+        <a href="${gmUrl}" target="_blank"
+           style="display:block;margin-top:8px;padding:7px 0;background:#10b981;color:#fff;text-align:center;border-radius:8px;font-size:12px;font-weight:700;text-decoration:none">
+          🗺 Traçar rota no Google Maps
+        </a>
+      </div>`;
+
+    const m=L.marker([l.lat,l.lng],{icon:lotIcon})
+      .addTo(lotMap)
+      .bindPopup(popup,{maxWidth:220});
+
+    // Clique no marcador rola até o card correspondente
+    m.on('click',()=>{
+      const cards=document.querySelectorAll('.lot-card');
+      if(cards[idx])cards[idx].scrollIntoView({behavior:'smooth',block:'nearest'});
     });
-    const bounds=L.latLngBounds([[userLat,userLng],...allLoterica.map(l=>[l.lat,l.lng])]);
-    lotMap.fitBounds(bounds,{padding:[40,40],maxZoom:16});
-    setTimeout(()=>lotMap.invalidateSize(),100);
-  };
-  addMarkers();
+
+    l.marker=m;
+    lotMarkers.push(m);
+  });
+
+  // Ajusta bounds para mostrar usuário + todas as lotéricas
+  const allLatLng=[[userLat,userLng],...allLoterica.map(l=>[l.lat,l.lng])];
+  const bounds=L.latLngBounds(allLatLng);
+  lotMap.fitBounds(bounds,{padding:[48,48],maxZoom:15});
+  [100,300,700].forEach(d=>setTimeout(()=>lotMap.invalidateSize(),d));
 }
 
 function renderLoterica(){
-  const fil=lotFilt==='all'?allLoterica:allLoterica.filter(l=>l.dist<=(parseFloat(lotFilt)*100));
+  const fil=lotFilt==='all'?allLoterica:allLoterica.filter(l=>l.dist<=(parseFloat(lotFilt)*1000));
   const el=document.getElementById('lot-list');
   if(!fil.length){el.innerHTML=`<div class="lot-empty"><p>Nenhuma lotérica no filtro selecionado.</p></div>`;return;}
-  el.innerHTML=fil.map((l,i)=>`
-    <div class="lot-card" onclick="focusLoterica(${l.lat},${l.lng},'${l.name.replace(/'/g,"\\'")}')">
-      <div class="lot-icon">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'🎱'}</div>
+  const medals=['🥇','🥈','🥉'];
+  el.innerHTML=fil.map((l,i)=>{
+    const idx=allLoterica.indexOf(l);
+    const gmUrl=`https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${l.lat},${l.lng}`;
+    return`<div class="lot-card" onclick="focusLoterica(${idx})">
+      <div class="lot-icon">${medals[i]||'🎱'}</div>
       <div style="flex:1;min-width:0">
         <div class="lot-name">${l.name}</div>
         ${l.addr?`<div class="lot-addr">📍 ${l.addr}</div>`:''}
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
           <span class="lot-dist">📏 ${distFmt(l.dist)}</span>
-          <a href="https://www.google.com/maps/dir/?api=1&destination=${l.lat},${l.lng}" target="_blank" onclick="event.stopPropagation()" style="font-size:10px;color:#64b5f6;text-decoration:none">🗺 Rota</a>
-          <a href="https://maps.apple.com/?daddr=${l.lat},${l.lng}" target="_blank" onclick="event.stopPropagation()" style="font-size:10px;color:#64b5f6;text-decoration:none">🍎 Apple Maps</a>
+          <a href="${gmUrl}" target="_blank" onclick="event.stopPropagation()"
+             style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.4);border-radius:8px;color:#10b981;font-size:10px;font-weight:700;text-decoration:none">
+            🗺 Rota Google Maps
+          </a>
         </div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
-function focusLoterica(lat,lng,name){
-  if(!lotMap)return;
-  lotMap.setView([lat,lng],17,{animate:true});
-  // Open popup of marker near this position
-  lotMarkers.forEach(m=>{const p=m.getLatLng();if(Math.abs(p.lat-lat)<0.0001&&Math.abs(p.lng-lng)<0.0001)m.openPopup();});
+function focusLoterica(idx){
+  const l=allLoterica[idx];
+  if(!l||!lotMap)return;
+  lotMap.setView([l.lat,l.lng],17,{animate:true});
+  if(l.marker)l.marker.openPopup();
   document.getElementById('map').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
